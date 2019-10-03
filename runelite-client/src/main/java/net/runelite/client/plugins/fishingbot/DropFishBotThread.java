@@ -10,17 +10,21 @@ import java.awt.event.KeyEvent;
 import java.util.ArrayList;
 import java.util.Random;
 
+import static net.runelite.client.plugins.Plugin.isMouseMoving;
+
 public class DropFishBotThread extends Thread {
 
     private MouseMotionFactory mouseMotionFactory;
-    ArrayList<MouseMotion> motions = new ArrayList<>();
-    Robot robot;
+    private ArrayList<MouseMotion> motions = new ArrayList<>();
+
+    private Random random;
+    private Robot robot;
+
 
     public DropFishBotThread(ArrayList<Integer> xPoints, ArrayList<Integer> yPoints){
         mouseMotionFactory = FactoryTemplates.createFastGamerMotionFactory();
 
         int size = xPoints.size();
-
         for(int i = 0; i < size; i++) {
             motions.add(mouseMotionFactory.build(xPoints.get(i), yPoints.get(i)));
         }
@@ -30,27 +34,37 @@ public class DropFishBotThread extends Thread {
         } catch (AWTException awte){
             this.robot = null;
         }
+
+        this.random = new Random();
     }
 
 
     @Override
     public void run() {
 
+        if(isMouseMoving) {
+            return;
+        } else {
+            isMouseMoving = true;
+        }
+
         try{
-            Thread.sleep(500);
+            // sleep for awhile before executing mouse movements
+            Thread.sleep(600 + (random.nextInt(2) * 600));
         } catch (InterruptedException ie){
-            System.out.println("error!!S!!");
+            System.out.println("Error in move movement thread. Exiting");
+            return;
         }
 
         for (int i = 0; i < motions.size(); i++) {
             try {
 
-                // 2 ticks for movement -> 1.2 secs
+                // moving the mouse
                 motions.get(i).move();
 
                 ArrayList<Integer> buckets = splitToBuckets(125, 5);
 
-                // 1 tick for dropping -> 0.6 secs
+                // shift clicking for dropping at random intervals
                 Thread.sleep(25 + buckets.get(0));
                 robot.keyPress(KeyEvent.VK_SHIFT);
                 Thread.sleep(125 + buckets.get(1));
@@ -62,13 +76,23 @@ public class DropFishBotThread extends Thread {
                 Thread.sleep(25 + buckets.get(4));
 
             } catch (InterruptedException ie) {
-                System.out.println("error!!S!");
+                System.out.println("Error in move movement thread. Exiting");
+                return;
             }
         }
+
+        try {
+            // randomly sleep for awhile
+            Thread.sleep(600 + (random.nextInt(4) * 600));
+        } catch (InterruptedException ie) {
+            System.out.println("Error in move movement thread. Exiting");
+            return;
+        }
+
+        isMouseMoving = false;
     }
 
     private ArrayList<Integer> splitToBuckets(Integer bucket, Integer size) {
-        Random random = new Random();
         ArrayList<Double> randomSeed = new ArrayList<>();
         ArrayList<Integer> newBuckets = new ArrayList<>();
 

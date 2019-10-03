@@ -57,7 +57,7 @@ public class AlphaPlugin extends Plugin {
                 if(!npc.get(i).isDead()){
                     NPC currentNpc = npc.get(i);
                     if(currentNpc.getConvexHull() != null){
-                        Polygon polygon = currentNpc.getConvexHull();
+                        /*Polygon polygon = currentNpc.getConvexHull();
 
                         int size = polygon.npoints;
                         int x = clientUI.frame.getX() + polygon.xpoints[size/2] + clientUI.getCanvasOffset().getX();
@@ -67,7 +67,7 @@ public class AlphaPlugin extends Plugin {
                         RunnableAttackGuard runnableAttackGuard = new RunnableAttackGuard(x, y);
                         Thread thread = new Thread(runnableAttackGuard);
                         thread.start();
-                        break;
+                        break;*/
                     }
                 }
             }

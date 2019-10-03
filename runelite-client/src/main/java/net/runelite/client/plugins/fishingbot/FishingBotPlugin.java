@@ -1,17 +1,15 @@
 package net.runelite.client.plugins.fishingbot;
 
+import com.google.inject.Provides;
 import net.runelite.api.Actor;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.InventoryID;
-import net.runelite.api.Item;
-import net.runelite.api.ItemContainer;
 import net.runelite.api.ItemID;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
 import net.runelite.api.Skill;
 import net.runelite.api.coords.LocalPoint;
-import net.runelite.api.events.ExperienceChanged;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.InteractingChanged;
@@ -21,10 +19,12 @@ import net.runelite.api.events.NpcSpawned;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.api.widgets.WidgetItem;
+import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientUI;
+import net.runelite.client.ui.overlay.OverlayManager;
 
 import javax.inject.Inject;
 import java.awt.*;
@@ -42,34 +42,62 @@ import java.util.Random;
 public class FishingBotPlugin extends Plugin {
 
     private final List<NPC> fishingSpots = new ArrayList<>();
-
-    private FishingSpot currentSpot;
-
+    @Inject
+    ClientUI clientUI;
+    private NPC currentSpot;
     private Player player;
 
-    private int counter = 0;
-
-    private int semaphore = 0;
-
+    private int gameTick = 0;
     private int botTick = 0;
 
     private Integer fishingLevel;
+
+    private int inventorySize;
+
+    private int isUnstableHeuristic;
+    private boolean isStable;
+    public static boolean isStartUp;
 
     @Inject
     private Client client;
 
     @Inject
-    ClientUI clientUI;
+    private OverlayManager overlayManager;
+
+    @Inject
+    private FishingBotConfig config;
+
+    @Inject
+    private FishingBotOverlay overlay;
+
+    @Provides
+    FishingBotConfig provideConfig(ConfigManager configManager) {
+        return configManager.getConfig(FishingBotConfig.class);
+    }
 
     @Override
     protected void startUp() throws Exception {
+        overlayManager.add(overlay);
+
         player = client.getLocalPlayer();
+        fishingSpots.clear();
         currentSpot = null;
         fishingLevel = client.getRealSkillLevel(Skill.FISHING);
+
+        isStartUp = true;
+        isUnstableHeuristic = 0;
+        isStable = true;
+
+        // wait 10 ticks -> 6 seconds
+        StartUpFishingBotThread startUp = new StartUpFishingBotThread();
+        startUp.start();
     }
 
     @Override
     protected void shutDown() throws Exception {
+        overlayManager.remove(overlay);
+
+        player = null;
         fishingSpots.clear();
         currentSpot = null;
         fishingLevel = null;
@@ -78,130 +106,135 @@ public class FishingBotPlugin extends Plugin {
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
 
-        if(semaphore > 0) {
-            return;
-        }
-
         int containerId = event.getContainerId();
+        if (containerId == InventoryID.INVENTORY.getId()) {
 
-        if(containerId == InventoryID.INVENTORY.getId()){
-
-            //dropFishes(28);
+            // checks the number of items inside inventory
+            Widget inventoryWidget = client.getWidget(WidgetInfo.INVENTORY);
+            Collection<WidgetItem> widgetItems = inventoryWidget.getWidgetItems();
+            inventorySize = widgetItems.size();
         }
     }
 
     @Subscribe
     public void onGameTick(GameTick event) {
 
-        counter++;
-
-        if(semaphore > 0) {
-            semaphore --;
-            System.out.println("Semaphore = " + semaphore);
+        if(isStartUp) {
             return;
         }
 
-        // exit
-        if (counter % 10 != 0) {
+        gameTick++;
+        if (gameTick % 10 != 0 || !isStable) {
             return;
         }
-        counter = 0;
-        System.out.println("Bot tick " + botTick);
+        gameTick = 0;
         botTick++;
 
-        Widget inventoryWidget = client.getWidget(WidgetInfo.INVENTORY);
-        Collection<WidgetItem> widgetItems = inventoryWidget.getWidgetItems();
-        if(widgetItems.size() >= 28) {
-            dropFishes(28);
+        System.out.println("Unstable heuristic: " + isUnstableHeuristic);
+
+        // check stability
+        if(currentSpot != null) {
+            isUnstableHeuristic = 0;
+        } else if (isUnstableHeuristic > 4){
+            isStable = false;
+        }
+
+        // if inventory is filled, drop fishes
+        if (inventorySize >= 28) {
+            dropFishes();
             return;
         }
 
-        if(currentSpot != null) {
-            System.out.println("Current fishing spot: " + "ID: " + currentSpot.getName() + " " + "Number of spots: " + fishingSpots.size());
-        } else {
-            System.out.println("Current fishing spot: NULL");
-        }
+        // checks if u are currently interacting with a fishing spot
+        // Also checks if u have leveled up and re clicks the fishing spot
+        if (currentSpot == null || fishingLevel != client.getRealSkillLevel(Skill.FISHING)) {
 
-        if(currentSpot == null || fishingLevel != client.getRealSkillLevel(Skill.FISHING)) {
+            if(!isMouseMoving) {
+                isUnstableHeuristic ++;
+            }
+
             fishingLevel = client.getRealSkillLevel(Skill.FISHING);
             clickFishingSpot();
+
         }
     }
 
-    private void dropFishes(int threshold) {
+    private void dropFishes() {
+
+        // do not move mouse if it is already moving
+        if(isMouseMoving) {
+            return;
+        }
 
         Widget inventoryWidget = client.getWidget(WidgetInfo.INVENTORY);
         Collection<WidgetItem> widgetItems = inventoryWidget.getWidgetItems();
 
-        if(widgetItems.size() >= threshold) {
+        Random random = new Random();
+        ArrayList<Integer> xPoints = new ArrayList<>();
+        ArrayList<Integer> yPoints = new ArrayList<>();
 
-            Random random = new Random();
+        // generate coordinates of items that needs to be dropped
+        Iterator<WidgetItem> iterator = widgetItems.iterator();
+        while (iterator.hasNext()) {
+            WidgetItem currentItem = iterator.next();
+            if (currentItem.getId() == ItemID.RAW_TROUT ||
+                    currentItem.getId() == ItemID.RAW_SALMON ||
+                    currentItem.getId() == ItemID.CLUE_BOTTLE_BEGINNER ||
+                    currentItem.getId() == ItemID.RAW_SHRIMPS ||
+                    currentItem.getId() == ItemID.RAW_ANCHOVIES) {
 
-            ArrayList<Integer> xPoints = new ArrayList<>();
-            ArrayList<Integer> yPoints = new ArrayList<>();
+                Rectangle bounds = currentItem.getCanvasBounds();
 
-            Iterator<WidgetItem> iterator = widgetItems.iterator();
-            while (iterator.hasNext()){
-                WidgetItem currentItem = iterator.next();
-                if(currentItem.getId() == ItemID.RAW_TROUT ||
-                        currentItem.getId() == ItemID.RAW_SALMON ||
-                        currentItem.getId() == ItemID.CLUE_BOTTLE_BEGINNER){
+                int xOffset = clientUI.frame.getX() + clientUI.getCanvasOffset().getX();
+                int yOffset = clientUI.frame.getY() + clientUI.getCanvasOffset().getY();
 
-                    semaphore += 2; // 1.2 secs
+                int xBound = (int) bounds.getX() + (int) (bounds.getWidth() * 0.25) + random.nextInt((int) (bounds.getWidth() * 0.5));
+                int yBound = (int) bounds.getY() + (int) (bounds.getHeight() * 0.25) + random.nextInt((int) (bounds.getHeight() * 0.5));
 
-                    Rectangle bounds = currentItem.getCanvasBounds();
+                int x = xOffset + xBound;
+                int y = yOffset + yBound;
 
-                    int xOffset = clientUI.frame.getX() + clientUI.getCanvasOffset().getX();
-                    int yOffset = clientUI.frame.getY() + clientUI.getCanvasOffset().getY();
-
-
-                    int xBound = (int) bounds.getX() + (int) (bounds.getWidth() * 0.25) + random.nextInt((int) (bounds.getWidth() * 0.5));
-                    int yBound = (int) bounds.getY() + (int) (bounds.getHeight() * 0.25) + random.nextInt((int) (bounds.getHeight() * 0.5));
-
-
-                    int x = xOffset + xBound;
-                    int y = yOffset + yBound;
-
-                    xPoints.add(x);
-                    yPoints.add(y);
-                }
+                xPoints.add(x);
+                yPoints.add(y);
             }
-            semaphore += 2;     //1.2 secs
-            semaphore += random.nextInt(3);
-
-            DropFishBotThread botThread = new DropFishBotThread(xPoints, yPoints);
-            botThread.start();
         }
+        DropFishBotThread botThread = new DropFishBotThread(xPoints, yPoints);
+        botThread.start();
     }
 
     // Checks if there is a fishing spot, and click it
     private void clickFishingSpot() {
 
-        if(fishingSpots.size() == 0) {
+        if (fishingSpots.size() == 0) {
             System.out.println("no fishing spot");
             return;
         }
 
-        inverseSortSpotDistanceFromPlayer();
+        if(isMouseMoving) {
+            return;
+        }
 
+        inverseSortSpotDistanceFromPlayer();
         NPC targetSpot = fishingSpots.get(fishingSpots.size() - 1);
 
-        // Get polygon of fishing spot
-        Polygon polygon = targetSpot.getConvexHull();
-        if(polygon == null) {
+        // Get shape of fishing spot
+        Shape shape = targetSpot.getConvexHull();
+        if (shape == null) {
             return;
         }
 
         Random random = new Random();
-        Rectangle rectangle = polygon.getBounds();
+        Rectangle rectangle = shape.getBounds();
 
-        int xPoint = (int) rectangle.getX() + (int)(0.45 * rectangle.getWidth()) + (int)(0.1 * random.nextDouble() * rectangle.getWidth());
-        int yPoint = (int) rectangle.getY() + (int)(0.45 * rectangle.getHeight()) + (int)(0.1 * random.nextDouble() * rectangle.getHeight());
+        // randomly picks a point within the boundary of the rectangle
+        int xPoint = (int) rectangle.getX() + (int) (0.3 * rectangle.getWidth()) + (int) (0.4 * random.nextDouble() * rectangle.getWidth());
+        int yPoint = (int) rectangle.getY() + (int) (0.3 * rectangle.getHeight()) + (int) (0.4 * random.nextDouble() * rectangle.getHeight());
 
         int x;
         int y;
 
-        if(polygon.contains(xPoint, yPoint)) {
+        // check if this generated point is within the boundary
+        if (shape.contains(xPoint, yPoint)) {
             x = clientUI.frame.getX() + xPoint + clientUI.getCanvasOffset().getX();
             y = clientUI.frame.getY() + yPoint + clientUI.getCanvasOffset().getY();
         } else {
@@ -211,7 +244,6 @@ public class FishingBotPlugin extends Plugin {
 
         System.out.println("Attempting to fish at " + targetSpot.getId());
 
-        semaphore += 2;
         FishingBotThread botThread = new FishingBotThread(x, y);
         botThread.start();
     }
@@ -236,7 +268,7 @@ public class FishingBotPlugin extends Plugin {
         final Actor target = event.getTarget();
 
         // player is not interacting
-        if(target == null){
+        if (target == null) {
             currentSpot = null;
             return;
         }
@@ -256,7 +288,7 @@ public class FishingBotPlugin extends Plugin {
             return;
         }
 
-        currentSpot = spot;
+        currentSpot = npc;
     }
 
     @Subscribe
@@ -295,6 +327,26 @@ public class FishingBotPlugin extends Plugin {
                         // And then by id
                         .thenComparing(NPC::getId)
         );
+    }
+
+    public int getBotTick() {
+        return this.botTick;
+    }
+
+    public boolean getIsMouseMoving() {
+        return isMouseMoving;
+    }
+
+    public int getInventorySize() {
+        return inventorySize;
+    }
+
+    public boolean getIsStable() {
+        return isStable;
+    }
+
+    public boolean getIsStartUp() {
+        return isStartUp;
     }
 
 }

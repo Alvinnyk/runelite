@@ -32,6 +32,8 @@ public abstract class Plugin implements Module
 {
 	protected Injector injector;
 
+	public static boolean isMouseMoving = false;
+
 	@Override
 	public void configure(Binder binder)
 	{
